@@ -1,0 +1,11 @@
+# Excel の一時ファイル・ロックファイル
+~$*
+*.tmp
+
+# マクロ実行時の出力フォルダ
+CSV_output/
+TXT_output/
+
+# Windows
+Thumbs.db
+desktop.ini
