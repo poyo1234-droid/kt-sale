@@ -9,3 +9,6 @@ TXT_output/
 # Windows
 Thumbs.db
 desktop.ini
+
+# テスト用の一時ブック（本番と混同しないよう追跡しない）
+_テスト用/
