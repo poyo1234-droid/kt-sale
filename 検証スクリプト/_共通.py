@@ -33,8 +33,13 @@ TXT_TANTOUSHA = os.path.join(
 TXT_KENSHOU = os.path.join(REPO, "_テスト用", "TXT_output")
 
 # 出力マクロを実行する対象ブック（コピー元）
+# 旧版（v50〜v52）は OLD\ に移してあるため、そちらも探す。
 def book(version="v53"):
-    return os.path.join(REPO, f"sale処理-{version}.xlsm")
+    for d in (REPO, os.path.join(REPO, "OLD")):
+        p = os.path.join(d, f"sale処理-{version}.xlsm")
+        if os.path.exists(p):
+            return p
+    return os.path.join(REPO, f"sale処理-{version}.xlsm")   # 見つからない場合は既定の場所を返す
 
 
 def read_txt(path):
