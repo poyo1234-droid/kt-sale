@@ -2,13 +2,8 @@
 ~$*
 *.tmp
 
-# マクロ実行時の出力フォルダ
-CSV_output/
-TXT_output/
-
-# Windows
-Thumbs.db
-desktop.ini
+# マクロの出力先（TXT_output / CSV_output）
+*_output/
 
 # テスト用の一時ブック（本番と混同しないよう追跡しない）
 _テスト用/
@@ -16,3 +11,7 @@ _テスト用/
 # Python
 __pycache__/
 *.pyc
+
+# Windows
+Thumbs.db
+desktop.ini
