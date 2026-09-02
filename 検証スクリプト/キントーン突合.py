@@ -1,4 +1,4 @@
-"""キントーンが出力したセール価格設定リストを、旧システムの出力と突き合わせる。
+"""キントーンが出力したセール価格設定リストを、旧システム（SQL ベースの基幹システム）の出力と突き合わせる。
 
   python キントーン突合.py                        # 既定のフォルダ同士を全メーカー突合
   python キントーン突合.py --メーカー 2 4          # メーカーNo. を指定して絞る
@@ -8,12 +8,14 @@
 旧システム側は 45列（A:メーカーNo. 〜 AJ:精算掛率）と列構成が異なるため、
 下の ATTR / PERF / ONLY_KYUU で対応付けている。
 
-比較は 2 種類に分けている。
+比較は 2 種類に分けている。どちらも本来は一致すべきで、分けているのは原因の性質が違うため。
 
-  属性（ATTR）… 基準日に依存しない項目。本来 100% 一致すべきで、
-                 不一致はどちらかの不具合を意味する
-  実績（PERF）… 在庫・販売数・セール実績など、出力した日のスナップショット。
-                 両者の基準日が違えば不一致が出るのが正常
+  属性（ATTR）… 品名・カテゴリ・価格など、抽出元に依らない項目。
+                 不一致は移行ロジックの問題を指す
+  実績（PERF）… 在庫・販売数・セール実績など、抽出元データに依存する項目。
+                 不一致は抽出条件（どの列を採るか、集計期間の取り方）の問題を指す
+
+  ※ 同じ回のリスト同士を突き合わせる前提。実行日が違っても実績値は一致するはず。
 
 突合キーは ブランド品番（キントーン C列 / 旧 E列）。
 結果は 6 シートの Excel（既定では キントーン側フォルダ）に出力する。
@@ -29,7 +31,7 @@ from _共通 import KINTONE_LIST, KYUU_LIST
 # --- 列マッピング（1始まり）------------------------------------------------
 # (表示名, キントーン列, 旧システム列)
 
-#: 基準日に依存しない項目。不一致＝不具合
+#: 抽出元に依らない項目。不一致＝移行ロジックの問題
 ATTR = [
     ("親カテゴリ",           1,  3),
     ("ブランド(子カテゴリ)", 2,  4),
@@ -43,7 +45,7 @@ ATTR = [
     ("オフ率",              16, 20),
 ]
 
-#: 出力日のスナップショット。基準日が違えば不一致は正常
+#: 抽出元データに依存する項目。不一致＝抽出条件の問題
 PERF = [
     ("販売開始日",           19, 24),
     ("在庫",                 20, 26),
@@ -242,7 +244,7 @@ def 出力(results, kintone_data, kyuu_data, meta, out_path):
         r += 1
     r += 2
 
-    ws.cell(r, 1, "■ 属性項目の一致状況（基準日に依存しない ＝ 本来100%一致すべき）").font = F_BOLD
+    ws.cell(r, 1, "■ 属性項目の一致状況（抽出元に依らない ＝ 不一致は移行ロジックの問題）").font = F_BOLD
     r += 1
     見出し(ws, r, ["比較項目", "キントーン列", "旧システム列", "不一致件数", "判定"],
            [26, 14, 14, 18, 60])
@@ -256,7 +258,7 @@ def 出力(results, kintone_data, kyuu_data, meta, out_path):
         r += 1
     r += 2
 
-    ws.cell(r, 1, "■ 実績項目の一致状況（基準日が異なるため不一致は正常・参考）").font = F_BOLD
+    ws.cell(r, 1, "■ 実績項目の一致状況（同じ回どうしのため、本来は一致すべき）").font = F_BOLD
     r += 1
     見出し(ws, r, ["比較項目", "キントーン列", "旧システム列", "不一致件数", "備考"],
            [26, 14, 14, 18, 60])
@@ -264,7 +266,7 @@ def 出力(results, kintone_data, kyuu_data, meta, out_path):
     for label, ki, oi in PERF:
         n = sum(results[m]["perf_mis"][label] for m in makers)
         行(ws, r, [label, gl(ki), gl(oi), f"{n}/{総共通}",
-                   "出力基準日の相違による差 ※シート4"], FILL_INFO)
+                   "抽出条件の要調査 ※シート4"], FILL_WARN if n else FILL_OK)
         r += 1
 
     # ---- 2_項目マッピング ----
@@ -278,10 +280,10 @@ def 出力(results, kintone_data, kyuu_data, meta, out_path):
     行(ws, r, ["キー", "ブランド品番", gl(KINTONE_KEYCOL), "ブランド品番", gl(KYUU_KEYCOL), "ブランド品番"], FILL_OK)
     r += 1
     for label, ki, oi in ATTR:
-        行(ws, r, ["属性(突合対象)", label, gl(ki), KINTONE_NAME[ki], gl(oi), KYUU_NAME[oi]])
+        行(ws, r, ["属性(移行ロジック)", label, gl(ki), KINTONE_NAME[ki], gl(oi), KYUU_NAME[oi]])
         r += 1
     for label, ki, oi in PERF:
-        行(ws, r, ["実績(参考)", label, gl(ki), KINTONE_NAME[ki], gl(oi), KYUU_NAME[oi]], FILL_INFO)
+        行(ws, r, ["実績(抽出条件)", label, gl(ki), KINTONE_NAME[ki], gl(oi), KYUU_NAME[oi]], FILL_INFO)
         r += 1
     行(ws, r, ["入力欄", "オフ率入力", "N", KINTONE_NAME[14], "O", KYUU_NAME[15]]); r += 1
     行(ws, r, ["入力欄", "税込価格入力", "O", KINTONE_NAME[15], "Q", KYUU_NAME[17]]); r += 2
@@ -302,9 +304,9 @@ def 出力(results, kintone_data, kyuu_data, meta, out_path):
     # ---- 3_値違い_属性 / 4_値違い_実績 ----
     for title, bucket, fill, note in (
             ("3_値違い_属性", "rows_attr", FILL_NG,
-             "共通品番のうち、基準日に依存しない属性項目で値が異なるもの。原則ゼロであるべき。"),
-            ("4_値違い_実績(参考)", "rows_perf", None,
-             "出力基準日が異なるため、不一致が出るのは正常。傾向確認用。")):
+             "共通品番のうち、抽出元に依らない属性項目で値が異なるもの。原則ゼロであるべき。"),
+            ("4_値違い_実績", "rows_perf", FILL_WARN,
+             "同じ回のリストどうしなので本来は一致するはず。不一致は抽出条件の要調査。在庫から順に追う。")):
         ws = wb.create_sheet(title)
         ws["A1"] = title[2:]
         ws["A1"].font = F_TITLE
@@ -327,7 +329,7 @@ def 出力(results, kintone_data, kyuu_data, meta, out_path):
     ws = wb.create_sheet("5_キントーンのみ")
     ws["A1"] = "キントーンにのみ存在する品番"
     ws["A1"].font = F_TITLE
-    ws["A2"] = "旧システムは在庫>0 の品番のみ出力するため、在庫なしはここに集まる。"
+    ws["A2"] = "旧システム（基幹システム）は在庫>0 の品番のみ出力するため、在庫なしはここに集まる。"
     ws["A2"].font = F_NOTE
     r = 4
     見出し(ws, r, ["メーカーNo.", "ブランド品番", "品名", "親カテゴリ", "ブランド",
@@ -406,7 +408,7 @@ def main(argv=None):
               f" / 旧 {len(O):>5}行 / 共通 {len(R['common']):>5}"
               f" / kのみ {len(R['kintone_only']):>5} / 旧のみ {len(R['kyuu_only'])}")
         print(f"    属性の不一致 {sum(R['attr_mis'].values())} 件"
-              f" / 実績の不一致 {sum(R['perf_mis'].values())} 件（参考）")
+              f" / 実績の不一致 {sum(R['perf_mis'].values())} 件")
         for key, fn in dupK + dupO:
             print(f"    ※ 品番の重複: {key}（{fn}）")
 
