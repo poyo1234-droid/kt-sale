@@ -20,7 +20,7 @@
 突合キーは ブランド品番（キントーン C列 / 旧 E列）。
 結果は 6 シートの Excel（既定では キントーン側フォルダ）に出力する。
 """
-import os, sys, glob, re, argparse, datetime, collections
+import os, sys, glob, re, argparse, datetime, collections, zipfile
 
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
@@ -82,6 +82,11 @@ KINTONE_KEYCOL, KINTONE_NCOL = 3, 23
 KYUU_KEYCOL,    KYUU_NCOL    = 5, 45
 KINTONE_STOCK, KINTONE_NAME_COL = 20, 7      # 在庫 / 品名（1始まり）
 DATA_ROW = 3                                  # 1行目=グループ見出し 2行目=項目名
+
+# 健全性チェックで使う列（1始まり）
+KINTONE_受注数, KINTONE_売上額, KINTONE_プロパー = 9, 10, 8
+KYUU_受注数,    KYUU_売上額,    KYUU_プロパー    = 30, 31, 11
+KINTONE_最終列 = 23                            # A〜W
 
 
 # --- 読み込み --------------------------------------------------------------
@@ -160,6 +165,7 @@ def 突合(kintone_rows, kyuu_rows):
         kintone_only=sorted(set(kintone_rows) - set(kyuu_rows)),
         kyuu_only=sorted(set(kyuu_rows) - set(kintone_rows)),
         attr_mis=collections.Counter(), perf_mis=collections.Counter(),
+        zero_pair=collections.Counter(),
         rows_attr=[], rows_perf=[],
         kintone_stock=sum(1 for v in kintone_rows.values() if 在庫あり(v)),
     )
@@ -173,7 +179,88 @@ def 突合(kintone_rows, kyuu_rows):
                 if a != b:
                     cnt[label] += 1
                     bucket.append([key, name, label, b, a])
+                elif a in ("", "0"):
+                    # 両方とも空欄／0 の「中身のない一致」。
+                    # 一致率を水増しするので別に数える（2026-09-05 追加）
+                    res["zero_pair"][label] += 1
     return res
+
+
+# --- 健全性チェック（2026-09-05 追加）--------------------------------------
+# 突合の「一致件数」だけを見ていると気づけない異常を検出する。
+# 過去に実際に起きたものを検査項目にしてある。
+
+def _数値(v):
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return f
+
+
+def _オートフィルタ(path):
+    """xlsx の autoFilter ref とシートの最終行を返す。読めなければ (None, None)。"""
+    try:
+        with zipfile.ZipFile(path) as z:
+            name = next(n for n in z.namelist() if n.startswith("xl/worksheets/sheet"))
+            xml = z.read(name).decode("utf-8", errors="replace")
+        m = re.search(r'<autoFilter ref="([^"]+)"', xml)
+        rows = [int(x) for x in re.findall(r'<row r="(\d+)"', xml)]
+        return (m.group(1) if m else None), (max(rows) if rows else None)
+    except Exception:
+        return None, None
+
+
+def 健全性(K, O, res, kintone_paths):
+    """1メーカー分の警告メッセージのリストを返す。空なら異常なし。"""
+    w = []
+    common = res["common"]
+
+    # (1) 受注数・売上額が全行ゼロ
+    #     2026-09-04 の出力で実際に起きた。売上の絞り込み期間が今回セール期間に
+    #     なっており1行も該当しなかった。仕様書 §12-3-4
+    k有 = sum(1 for v in K.values() if (_数値(v[KINTONE_受注数 - 1]) or 0) > 0)
+    o有 = sum(1 for v in O.values() if (_数値(v[KYUU_受注数 - 1]) or 0) > 0)
+    if k有 == 0 and o有 > 0:
+        w.append(f"受注数が全行ゼロ（キントーン 0行 / 旧 {o有}行）。"
+                 f"売上の絞り込み期間を疑うこと（仕様書 §12-3-4）")
+
+    # (2) 中身のない一致（両方とも空欄／0）
+    #     ゼロ同士の一致を一致と数えると、直っていないのに一致率が上がる
+    if common:
+        for label, n in res["zero_pair"].most_common():
+            if n >= len(common) * 0.9:
+                w.append(f"「{label}」は共通{len(common)}件中{n}件が両方とも空欄／0。"
+                         f"一致しているのではなく、両方とも値が無いだけ")
+
+    # (3) プロパー価格が値下げ後の疑い
+    #     キントーン値 ÷ 旧値 がきれいな割引率に揃うなら、値下げ後価格を拾っている。
+    #     2026-09-04 に15品番で発生。原因は在庫分析アプリの列取り違え（仕様書 §12-3-2）
+    比 = collections.Counter()
+    for key in common:
+        a = _数値(K[key][KINTONE_プロパー - 1])
+        b = _数値(O[key][KYUU_プロパー - 1])
+        if a and b and a != b and 0.4 <= a / b < 1.0:
+            比[round(a / b, 2)] += 1
+    if 比:
+        内訳 = " / ".join(f"{r}×{n}件" for r, n in 比.most_common(5))
+        w.append(f"プロパー価格が旧より安い品番が{sum(比.values())}件（比率 {内訳}）。"
+                 f"値下げ後の価格を拾っている疑い（仕様書 §12-3-2）")
+
+    # (4) オートフィルタの範囲と空行
+    #     テンプレートが2000行固定なので、データ行数と合わないことがある（仕様書 §9-4）
+    最終データ行 = DATA_ROW + len(K) - 1
+    for p in kintone_paths:
+        ref, 最終行 = _オートフィルタ(p)
+        if ref:
+            m = re.search(r"\$?[A-Z]+\$?(\d+):\$?[A-Z]+\$?(\d+)", ref)
+            if m and int(m.group(2)) != 最終データ行:
+                w.append(f"オートフィルタ範囲 {ref} がデータ最終行 {最終データ行} と合わない"
+                         f"（{os.path.basename(p)}）")
+        if 最終行 and 最終行 > 最終データ行:
+            w.append(f"データ最終行 {最終データ行} より下に {最終行 - 最終データ行} 行残っている"
+                     f"（{os.path.basename(p)}）")
+    return w
 
 
 # --- Excel 出力 ------------------------------------------------------------
@@ -395,6 +482,7 @@ def main(argv=None):
         return 1
 
     results, kintone_data, kyuu_data, names = {}, {}, {}, {}
+    警告 = {}
     for m in targets:
         K, dupK = 読む(kintone_files[m], KINTONE_KEYCOL, KINTONE_NCOL)
         O, dupO = 読む(kyuu_files[m], KYUU_KEYCOL, KYUU_NCOL)
@@ -411,6 +499,9 @@ def main(argv=None):
               f" / 実績の不一致 {sum(R['perf_mis'].values())} 件")
         for key, fn in dupK + dupO:
             print(f"    ※ 品番の重複: {key}（{fn}）")
+        警告[m] = 健全性(K, O, R, kintone_files[m])
+        for msg in 警告[m]:
+            print(f"    [警告] {msg}")
 
     out = a.out or os.path.join(a.kintone,
                                 f"{datetime.date.today():%y%m%d}_kintone_旧システム_突合結果.xlsx")
@@ -420,6 +511,15 @@ def main(argv=None):
     総属性 = sum(sum(results[m]["attr_mis"].values()) for m in targets)
     print(f"\n出力: {out}")
     print(f"対象 {len(targets)} メーカー / 属性の不一致 合計 {総属性} 件")
+
+    総警告 = sum(len(v) for v in 警告.values())
+    if 総警告:
+        print(f"\n[警告 {総警告}件] 一致件数だけでは気づけない異常がある")
+        for m in targets:
+            for msg in 警告.get(m, []):
+                print(f"  メーカー{m:>3}: {msg}")
+    else:
+        print("健全性チェック: 異常なし")
     if 片方だけ:
         頭 = ", ".join(片方だけ[:15])
         続き = f" …ほか{len(片方だけ) - 15}メーカー" if len(片方だけ) > 15 else ""
