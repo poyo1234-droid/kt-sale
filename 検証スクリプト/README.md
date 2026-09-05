@@ -23,6 +23,9 @@ python 品番を探す.py --親カテ "EVER METAL"
 # 4. キントーンが出力したセール価格設定リストと突き合わせる
 python キントーン突合.py                 # 既定のフォルダ同士を全メーカー
 python キントーン突合.py --メーカー 2 4   # メーカーNo. で絞る
+
+# 0. その前に、キントーンの出力（k/60 の添付）をローカルへ落とす
+python キントーン添付DL.py --id 1736-1938
 ```
 
 ## ファイル
@@ -33,11 +36,17 @@ python キントーン突合.py --メーカー 2 4   # メーカーNo. で絞る
 | `TXT出力を実行.py` | ブックのコピーで `ExportColumnsAEInTXTChunks_ANSI`（Module3）を実行 |
 | `TXTを比較.py` | 3段階（バイト / 文字 / 列）で照合し、連結 SHA256 も確認 |
 | `品番を探す.py` | 品番・親カテゴリがどの TXT の何行目、どのシートにあるかを表示 |
+| `キントーン添付DL.py` | k/60「セール返答表」の添付を一括ダウンロードし、宛先3列を含む `_DL一覧.csv` を出す |
 | `キントーン突合.py` | キントーン出力のセール価格設定リストと旧システムの出力を突合し、6シートの差分 Excel を作る |
 
 ## 前提
 
 - `pip install pywin32 openpyxl`（`キントーン突合.py` は openpyxl だけで動く。Excel も不要）
+- `キントーン添付DL.py` は `requests` と `openpyxl`。接続情報は
+  `260318ー登録エクセルkintone化\納品書作成\config\kintone_config.xlsx` の
+  **A65「セール返答表」/ C65 APIトークン / C66 アプリID / C3 サブドメイン**から読む。
+  行がずれていたら A65 のラベル照合で止まる。**Cowork 側のシェルは cybozu.com に
+  出られないので、このスクリプトは Windows 側で実行する。**
 - Excel の「VBA プロジェクト オブジェクト モデルへのアクセスを信頼する」が有効
   （`HKCU\Software\Microsoft\Office\16.0\Excel\Security\AccessVBOM` = 1）
 - 日本語パスのため、コンソールでは `PYTHONUTF8=1` を付けると安全
