@@ -117,26 +117,61 @@ def 一覧(folder):
     return out
 
 
+def キー正規化(v):
+    """突合キー（ブランド品番）の型の違いを吸収して文字列にする。2026-09-08 追加。
+
+    キントーン側は Google Sheets 由来で数値セルが float になり "330037.0"、旧システム側は
+    int で "330037" になる。**ファイル上はどちらも数値セルで見た目は同じ**で、
+    これは突合スクリプト側の都合でしかないため、ここで揃える（警告は出さない）。
+    """
+    if isinstance(v, float) and v == int(v):
+        return str(int(v))
+    return str(v).strip()
+
+
+def 先頭セグメント(key):
+    """スラッシュ連結の品番を先頭セグメントにする。連結でなければそのまま返す。"""
+    return key.split("/")[0].strip() if "/" in key else key
+
+
 def 読む(paths, keycol, ncol):
     """セール価格設定リストを ブランド品番 → 行（値のリスト）にして返す。
 
     旧システムは 1メーカーが子カテゴリ単位で複数ファイルに分かれることがあるため、
     複数パスを受け取って 1つの dict にまとめる。
+
+    `WIN-270899/270899A` のようなスラッシュ連結は、同じ商品なのに片側だけ連結表記に
+    なっていることがある（2026-09-08 に実測）。そこで先頭セグメントで照合するが、
+    **丸めた先が他の品番とぶつかるときは丸めない。**同じキーになった行は捨てられるため、
+    無条件に丸めると行が消える。3つ目の戻り値は 丸めたキー → 元の文字列で、
+    呼び出し側の警告に使う。
     """
-    rows, dup = {}, []
+    生, dup, 丸め = [], [], {}
     for path in paths:
         ws = openpyxl.load_workbook(path, data_only=True).worksheets[0]
         for r in range(DATA_ROW, ws.max_row + 1):
             key = ws.cell(r, keycol).value
             if key in (None, ""):
                 continue
-            key = str(key).strip()
             vals = [ws.cell(r, c).value for c in range(1, ncol + 1)]
-            if key in rows:
-                dup.append((key, os.path.basename(path)))
-                continue
-            rows[key] = vals
-    return rows, dup
+            生.append((キー正規化(key), vals, os.path.basename(path)))
+
+    候補 = collections.defaultdict(set)
+    for k, _, _ in 生:
+        候補[先頭セグメント(k)].add(k)
+
+    rows = {}
+    for 生キー, vals, fn in 生:
+        s = 先頭セグメント(生キー)
+        if s != 生キー and len(候補[s]) == 1:
+            key, 丸め[s] = s, 生キー
+        else:
+            key = 生キー
+        if key in rows:
+            dup.append((key, fn))
+            continue
+        rows[key] = vals
+    return rows, dup, 丸め
 
 
 def 正規化(v):
@@ -484,8 +519,8 @@ def main(argv=None):
     results, kintone_data, kyuu_data, names = {}, {}, {}, {}
     警告 = {}
     for m in targets:
-        K, dupK = 読む(kintone_files[m], KINTONE_KEYCOL, KINTONE_NCOL)
-        O, dupO = 読む(kyuu_files[m], KYUU_KEYCOL, KYUU_NCOL)
+        K, dupK, 丸めK = 読む(kintone_files[m], KINTONE_KEYCOL, KINTONE_NCOL)
+        O, dupO, 丸めO = 読む(kyuu_files[m], KYUU_KEYCOL, KYUU_NCOL)
         kintone_data[m], kyuu_data[m] = K, O
         # メーカー名は旧システム側の B列が正（キントーン側は持っていない）
         names[m] = 正規化(next(iter(O.values()))[1]) if O else ""
@@ -500,6 +535,14 @@ def main(argv=None):
         for key, fn in dupK + dupO:
             print(f"    ※ 品番の重複: {key}（{fn}）")
         警告[m] = 健全性(K, O, R, kintone_files[m])
+        # スラッシュ連結の表記違いで一致させたものは黙って消さず、必ず警告に出す。
+        # 両側とも同じ表記なら丸めなくても一致するので、対象は生の文字列が食い違うものだけ。
+        緩い = [k for k in R["common"] if 丸めK.get(k, k) != 丸めO.get(k, k)]
+        if 緩い:
+            例 = " / ".join(f"{丸めK.get(k, k)} ⇔ {丸めO.get(k, k)}" for k in 緩い[:3])
+            続き = f" ほか{len(緩い) - 3}件" if len(緩い) > 3 else ""
+            警告[m].append(f"品番の表記違いを先頭セグメントで一致させた品番が{len(緩い)}件"
+                          f"（例: {例}{続き}）")
         for msg in 警告[m]:
             print(f"    [警告] {msg}")
 
